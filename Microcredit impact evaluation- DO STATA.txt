@@ -1,0 +1,201 @@
+**Applied Statistics PUCP***********
+*******************Difference in Difference************
+*Source: Handbook of Impact Evaluation 
+
+clear
+set more off
+
+** Route defined
+global ruta "C:\Stata-bases"
+
+use "$ruta\hh_9198"
+
+*0* First, i calculate the differences manually
+
+gen exptot0=exptot if year==0
+egen exptot91=max(exptot0), by(nh)
+keep if year==1
+gen lexptot91=ln(1+exptot91) if year==1
+gen lexptot98=ln(1+exptot) if year==1
+
+	// Create first difference:
+	// pre vs post intervention 
+gen lexptot9891=lexptot98-lexptot91
+
+	// by() creates second difference:
+	// control vs treatment
+ttest lexptot9891 if year==1, by(dmmfd)
+ttest lexptot9891 if year==1, by(dfmfd)
+
+*1* Calculating the impact through regression
+
+use "$ruta\hh_9198"
+
+	/* vars already created
+
+gen lexptot=ln(1+exptot)
+gen lnland=ln(1+hhland/100)
+	*/
+
+gen dmmfd1=dmmfd==1 & year==1
+egen dmmfd98=max(dmmfd1), by(nh)
+gen dfmfd1=dfmfd==1 & year==1
+egen dfmfd98=max(dfmfd1), by(nh)
+gen dmmfdyr=dmmfd98*year
+gen dfmfdyr=dfmfd98*year
+
+tab dmmfd98 year
+tab dfmfd98 year
+
+	*1.1 Basic model
+	
+	reg lexptot year##dmmfd98
+	// es lo mismo que reg lexptot year dmmfd98 dmmfdyr
+
+	reg lexptot year##dfmfd98
+	// es lo mismo que reg lexptot year dmmfd98 dfmfdyr
+	
+		
+	*1.2 Model with controls
+	
+	global controles sexhead agehead educhead lnland vaccess pcirr rice wheat milk oil egg	
+	
+	reg lexptot year##dmmfd98 $controles [pw=weight]
+	reg lexptot year##dfmfd98 $controles [pw=weight]
+
+	*1.3 Panel model with fixed effects
+	
+	*Estimador con modelo FE de panel elimina las variables invariables en el tiempo
+	* sean observadas o no observadas pues realiza una primera diferente entre periodos
+	
+	xtreg lexptot year##dmmfd98, fe i(nh)
+	xtreg lexptot year##dfmfd98, fe i(nh)
+
+	//Other option es setting the panel
+	
+	xtset nh year
+	
+	xtreg lexptot year##dmmfd98, fe 
+	xtreg lexptot year##dfmfd98, fe 
+	
+	
+	*1.4 Panel model extended
+	
+	xtreg lexptot year##dmmfd98 $controles, fe i(nh)
+	xtreg lexptot year##dfmfd98 $controles, fe i(nh)
+	
+*2 DD with cross section data
+	
+  
+   // target: elegibles to participate on microcredit program 
+   // provill: village program dummy
+	
+	use "$ruta\hh_9198", clear
+	
+	global controles sexhead agehead educhead lnland vaccess pcirr rice wheat milk oil egg	
+
+	foreach p in vill lexptot lnland target progvill{
+	
+		cap drop `p'
+	}
+	*
+	
+	gen vill=thanaid*10+villid // id village
+	
+	gen lexptot=ln(1+exptot) // outcome
+	gen lnland=ln(1+hhland/100) // criterio target 
+	gen target=hhland<50     // target villages
+	gen progvill=thanaid<25  // program villages 
+
+	tab target progvill // , row nofreq
+	sum target if progvill==1
+
+	*2.1 OLS
+	
+	reg lexptot progvill##target
+	reg lexptot progvill##target $controles [pw=weight]
+
+	*2.2 PANEL FE
+	// No se puede hacer a nivel de hogares porque cada hogar aparece una
+	// sola vez en la muestra. Se corre FE a nivel de village
+
+	xtreg lexptot progvill##target, fe i(vill)
+	xtreg lexptot progvill##target sexhead agehead educhead lnland, fe i(vill)
+
+
+*3* DD y Propensity Score Matching
+
+****Male paticipants
+
+	use "$ruta\hh_9198", clear
+	global controles sexhead agehead educhead lnland vaccess pcirr rice wheat milk oil egg
+	
+	cap drop lnland
+	cap drop dmmfd1
+	cap drop dmmfd98
+	
+gen lnland=ln(1+hhland/100)
+gen dmmfd1=dmmfd==1 & year==1
+egen dmmfd98=max(dmmfd1), by(nh)
+keep if year==0
+
+//findit pscore
+
+pscore dmmfd98 $controles [pw=weight], pscore(ps98) blockid(blockf1) comsup level(0.001)
+
+keep if blockf1!=.
+keep nh 
+sort nh
+
+merge nh using "$ruta\hh_9198"
+keep if _merge==3 // solo matched, es decir solo los que estaban en block 1 o block 2 
+
+gen lexptot=ln(1+exptot)
+gen lnland=ln(1+hhland/100)
+gen dmmfd1=dmmfd==1 & year==1
+egen dmmfd98=max(dmmfd1), by(nh)
+gen dmmfdyr=dmmfd98*year
+
+xtreg lexptot dmmfd98 year dmmfdyr $controles, fe i(nh)
+
+****Female paticipants;
+	use "$ruta\hh_9198", clear
+	global controles sexhead agehead educhead lnland vaccess pcirr rice wheat milk oil egg
+	
+	cap drop lnland
+	cap drop dfmfd1
+	cap drop dfmfd98
+	
+gen lnland=ln(1+hhland/100)
+gen dfmfd1=dfmfd==1 & year==1
+egen dfmfd98=max(dfmfd1), by(nh)
+keep if year==0
+
+// Calculating the propensity score
+
+pscore dfmfd98 $controles [pw=weight], pscore(ps98) blockid(blockf1) comsup level(0.001)
+
+// I keep balanced blocks and addres the ids on original base
+
+keep if blockf1!=.
+keep nh
+sort nh
+merge nh using "$ruta\hh_9198"
+keep if _merge==3
+
+//Measure the impact
+
+capture drop lexptot
+cap drop lnland
+
+gen lexptot=ln(1+exptot)
+gen lnland=ln(1+hhland/100)
+gen dfmfd1=dfmfd==1 & year==1
+egen dfmfd98=max(dfmfd1), by(nh)
+gen dfmfdyr=dfmfd98*year
+
+xtset nh year 
+
+xtreg lexptot year##dfmfd98 $controles, fe 
+
+
